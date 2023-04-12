@@ -1,0 +1,65 @@
+- hosts: all
+  become: yes
+
+  tasks:
+    - name: Set timezone to Asia/Jerusalem
+      community.general.timezone:
+        name: Asia/Jerusalem
+
+    - name: Fixing containerd sock
+      shell: |
+              sudo crictl config --set runtime-endpoint=unix:///run/containerd/containerd.sock --set image-endpoint=unix:///run/containerd/containerd.sock
+
+    - name: Setup Static IP
+      copy:
+        dest: "/etc/netplan/50-cloud-init.yaml"
+        content: |
+             network:
+                 version: 2
+                 ethernets:
+                     eth0:
+                         addresses: [{{ ansible_default_ipv4.address }}/24]
+                         nameservers:
+                             addresses: [{{ ansible_default_ipv4.gateway }}]
+                         routes:
+                             - to: default
+                               via: {{ ansible_default_ipv4.gateway }}
+
+    - name: allow 'ubuntu' to use sudo without needing a password
+      lineinfile:
+        dest: /etc/sudoers
+        line: 'ubuntu ALL=(ALL) NOPASSWD: ALL'
+        validate: 'visudo -cf %s'
+
+    - name: kubectl commands
+      become: yes
+      become_user: ubuntu
+      blockinfile:
+        path: "/home/ubuntu/.bashrc"
+        block: |
+              alias k='kubectl' kd='kubectl delete' ka='kubectl apply' kgp='kubectl get pods'
+              alias kgs='kubectl get services' kga='kubectl get all' wka='watch kubectl get all' kgn='kubectl get nodes' kc='kubectl create'
+              export do='--dry-run=client -o yaml'
+              source <(kubectl completion bash)
+              complete -o default -F __start_kubectl k
+
+    - name: autocompletion
+      become: yes
+      become_user: ubuntu
+      shell: |
+            kubectl completion bash | sudo tee /etc/bash_completion.d/kubectl > /dev/null
+    
+    - name: Configure NFS
+      become: yes
+      become_user:  ubuntu
+      shell: |
+            sudo mkdir /nfs; sudo apt install rpcbind nfs-common -y; echo "192.168.100.250:/mnt/nfs    /nfs/   nfs auto,nofail,noatime,nolock,intr,tcp,actimeo=1800 0 0" | sudo tee -a /etc/fstab 
+
+    - name: Disable apparmor
+      become: yes
+      shell: |
+            sudo systemctl stop apparmor; sudo systemctl disable apparmor; sudo systemctl restart containerd
+
+    - name: Rebooting 
+      reboot:
+        test_command: uptime
